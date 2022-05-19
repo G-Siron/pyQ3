@@ -21,6 +21,7 @@ class eq6output:
         self.created_and_destroyed = None
         self.species_concs = None
         self.solid_solutions = None
+        self.modes = None
 
         self._created_destroyed_begin = None
 
@@ -32,6 +33,7 @@ class eq6output:
             self.read_dest_mol(tab_filepath)
             self.read_dest_other(tab_filepath, self._created_destroyed_begin)
             self.read_log_conc(output_filepath)
+            self.read_modes(output_filepath)
         except:
             linecache.clearcache()
 
@@ -489,3 +491,165 @@ class eq6output:
 
         self.species_concs = tab
         linecache.clearcache()
+        
+    def EQ6_lines_output(self, path_output):
+        """ Reads the test output to get the lines for the product summaries and the grand summaries"""
+
+        # Store the all output file in a list and then determine where the grand summary of phases is
+        text_output = []
+        line_start_product = []
+        line_stop_product = []
+        line_start_summary = []
+        line_stop_summary = []
+        lookup = 'activity ratios of cations'
+        lookup_summary = 'grand summary'
+        lookup_end = 'mass, grams'
+        output_eq6 = open(path_output, 'r')
+        for num, line in enumerate(output_eq6, 0):
+            text_output.append(line)
+            if lookup in line:
+                line_start_product.append(num)
+            elif lookup_summary in line:
+                line_stop_product.append(num)
+                line_start_summary.append(num)
+            elif lookup_end in line:
+                line_stop_summary.append(num)
+
+        return line_start_product, line_stop_product, line_start_summary, line_stop_summary, text_output
+
+    def EQ6_product_vol(self, Summary_product, product_moles):
+        """ Get the volumes for the product phases.
+        Returns panda DataFrame with the End-member, the minerals and their volumes"""
+        
+        mineral = []
+        name = []
+        mol = []
+        gram = []
+        volume = []
+        for i in product_moles.columns:
+            if '(SS)' in i:
+                for j in range(len(Summary_product)):
+                    if i in Summary_product[j]:
+                        for k in range(1,3):
+                            if len(Summary_product[j+k].strip()[0:20].strip(' ')) >= 1:
+                                mineral.append(Summary_product[j].strip()[0:25].strip(' '))
+                                name.append(Summary_product[j+k].strip()[0:25].strip(' '))
+                                volume.append(float(Summary_product[j+k].strip()[69:80]))
+            else:
+                for j in range(len(Summary_product)):
+                    if i in Summary_product[j]:
+                        mineral.append(Summary_product[j].strip()[0:25].strip(' '))
+                        name.append(Summary_product[j].strip()[0:25].strip(' '))
+                        volume.append(float(Summary_product[j].strip()[69:80]))
+
+        # Add the columns moles, grams, volume cc to the dataframe
+        data_products = pd.DataFrame({'End-member' : name, 'Minerals' : mineral, 'volumes' : volume})
+
+        return data_products
+
+
+    def EQ6_summary_vol(self, Grand_summary, reactants):
+        """ Get the volumes for the phases (product and reactants) from the grand summary.
+        Returns panda DataFrame with the End-member, the minerals and their volumes"""
+
+        mineral = []
+        name = []
+        volume = []
+        for i in reactants.columns:
+            if '(SS)' in i:
+                for j in range(len(Grand_summary)):
+                    if i in Grand_summary[j]:
+                        for k in range(2,5):
+                            if len(Grand_summary[j+k].strip()[0:20].strip(' ')) >= 1:
+                                mineral.append(Grand_summary[j].strip()[0:20].strip(' '))
+                                name.append(Grand_summary[j+k].strip()[0:20].strip(' '))
+                                volume.append(float(Grand_summary[j+k].strip()[65:80]))
+            else:
+                for j in range(len(Grand_summary)):
+                    if i in Grand_summary[j]:
+                        mineral.append(Grand_summary[j].strip()[0:20].strip(' '))
+                        name.append(Grand_summary[j].strip()[0:20].strip(' '))
+                        volume.append(float(Grand_summary[j].strip()[69:80]))
+
+        # Add the columns moles, grams, volume cc to the dataframe
+        data_all = pd.DataFrame({'End-member' : name, 'Minerals' : mineral, 'volumes' : volume})
+
+        return data_all
+
+    def read_modes(self, output_filepath):
+        """ Main function to get the mineral modes """
+
+
+        # Get the lines for the start and end of each product summary section, plus store the output as a list (of lines)
+        line_start_prod, line_stop_prod, line_start_grand, line_stop_grand, text_output = self.EQ6_lines_output(output_filepath)
+
+        # Create an empty dataframe with the correct length and columns for the products
+        Data = np.zeros((len(line_start_grand), len(self.minerals.columns)))
+        df = pd.DataFrame(Data)
+        df.columns = self.minerals.columns
+
+        # Iteration for each logzi to get the volume of product phases
+        for i in range(len(line_start_grand)):
+            Summary_prod = text_output[line_start_prod[i]+3:line_stop_prod[i]-1]
+            data_prod = self.EQ6_product_vol(Summary_prod, self.minerals)
+            if data_prod.empty == False:
+                Vol = []
+                for j in self.minerals.columns:
+                    mineral = data_prod[data_prod['Minerals'].astype(str).str.contains(j, regex=False)]
+                    Vol.append(np.sum(mineral['volumes'].values))
+                df.iloc[i] = Vol            
+            else:
+                df.iloc[i] = np.zeros((len(self.minerals.columns)))
+
+        # Create an empty DataFrame for rectants phases
+        Data_all = np.zeros((len(line_start_grand), len(self.destroyed_reactants.columns)))
+        df_all = pd.DataFrame(Data_all)
+        df_all.columns = self.destroyed_reactants.columns
+        df_reac = pd.DataFrame(Data_all)
+        df_reac.columns = self.destroyed_reactants.columns
+
+        # Iteration for each logzi to get the volume of grand summary of phases
+        for i in range(len(line_start_grand)):
+            Summary_all = text_output[line_start_grand[i]+3:line_stop_grand[i]-1]
+            data_all = self.EQ6_summary_vol(Summary_all, self.destroyed_reactants)
+            Vol = []
+            for j in self.destroyed_reactants.columns:
+                mineral = data_all[data_all['Minerals'].astype(str).str.contains(j, regex=False)]
+                Vol.append(np.sum(mineral['volumes'].values))
+            df_all.iloc[i] = Vol            
+
+        # Subtract the volume of product for reactant phases
+        for i in self.destroyed_reactants.columns:
+            for j in self.minerals.columns:
+                if i == j:
+                    for n in range(len(df_all[i])):
+                        df_reac[i].iloc[n] = float(df_all[i].iloc[n]) - df[i].iloc[n]
+                else:
+                    for n in range(len(df_all[i])):
+                        df_reac[i].iloc[n] = df_all[i].iloc[n]
+        
+        
+        # Sum the volumes produced at every reaction progress
+        for i in range(len(df)):
+            if i > 0:
+                for j in df.columns:
+                    df[j].iloc[i] = df[j].iloc[i] + df[j].iloc[i-1]
+
+        df.index = self.destroyed_reactants.index
+        df_reac.index = self.destroyed_reactants.index
+
+        #  Rename the columns of the two DataFrame
+        for n in range(len(df.columns)):
+            df.rename(columns={df.columns[n] : df.columns[n] + ' prod.'}, inplace = True)
+        for m in range(len(df_reac.columns)):
+            df_reac.rename(columns={df_reac.columns[m] : df_reac.columns[m] + ' reac.'}, inplace = True)
+
+
+        # Concatenate the two DataFrame
+        self.modes = pd.concat([df, df_reac], axis=1)
+
+
+        # Compute the vol%
+        Sum = self.modes.sum(axis = 1)
+        for i in self.modes.columns:
+            self.modes[i] = 100 * (self.modes[i] / Sum)
